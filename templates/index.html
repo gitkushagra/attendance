@@ -1,0 +1,128 @@
+{% extends "base.html" %}{% block title %}Dashboard · HoursTrack{% endblock %}
+{% block body %}
+<div class="container">
+<header><div><div class="logo">Hours<span>Track</span></div><div class="muted" style="font-size:12px">Weekly hours dashboard</div></div>
+<div class="user"><span class="muted">{{user["username"]}}</span><span class="avatar">{{user["username"][0]|upper}}</span><a class="btn secondary" href="{{url_for('logout')}}">Logout</a></div></header>
+
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{category}}">{{message}}</div>{% endfor %}{% endwith %}
+
+<div class="grid">
+<section class="panel"><div class="hero"><div>
+<div class="muted">Monday {{week_start.strftime("%d %b %Y")}} → Friday {{week_end.strftime("%d %b %Y")}}</div>
+<div class="big">{{format_minutes(data["left"])}}</div><div class="small">required hours left this week · {{format_minutes(data["average_remaining"])}} average per remaining working day</div>
+<div class="notice">
+{% if data["balance"] > 0 %}<span class="positive">{{format_minutes(data["balance"])}} overtime banked.</span>
+{% elif data["balance"] < 0 %}<span class="negative">{{format_minutes(-data["balance"])}} still required.</span>
+{% else %}Weekly balance is exactly on target.{% endif %}
+</div></div>
+<div class="ringbox"><svg class="ring" viewBox="0 0 170 170"><circle class="back" cx="85" cy="85" r="68"/><circle id="ring" class="front" cx="85" cy="85" r="68"/></svg><div class="ringtext"><div><b id="percent">0%</b><span>completed</span></div></div></div></div>
+<div class="stats"><div class="stat"><b>{{format_minutes(data["worked"])}}</b><span>Worked</span></div><div class="stat"><b>{{format_minutes(data["required"])}}</b><span>Required</span></div><div class="stat"><b class="{{'positive' if data['balance']>=0 else 'negative'}}">{{'+' if data["balance"]>=0 else '-'}}{{format_minutes(data["balance"]|abs)}}</b><span>Balance</span></div></div>
+</section>
+
+<section class="panel"><div class="section-head"><h2>Week controls</h2></div>
+<form class="toolbar" method="get">
+<div class="field"><label>Month</label><select name="month">{% for m in range(1,13) %}<option value="{{m}}" {% if week_start.month==m %}selected{% endif %}>{{["","January","February","March","April","May","June","July","August","September","October","November","December"][m]}}</option>{% endfor %}</select></div>
+<div class="field"><label>Week of month</label><select name="week_of_month">{% for w in range(1,6) %}<option value="{{w}}" {% if ((week_start.day-1)//7+1)==w %}selected{% endif %}>Week {{w}}</option>{% endfor %}</select></div>
+<div class="field"><label>Year</label><select name="year">{% for y in range(week_start.year-1,week_start.year+2) %}<option value="{{y}}" {% if y==week_start.year %}selected{% endif %}>{{y}}</option>{% endfor %}</select></div>
+<button class="btn">Open week</button></form>
+<div class="notice">Normal working day = 9 hours. A shortfall rolls forward; overtime reduces the next working day's target.</div>
+<div class="notice"><b>WFH automatically logs 10:00 AM → 7:00 PM.</b> It is a working day for daily calculations, and does not reduce the weekly 45-hour requirement.</div>
+</section>
+</div>
+
+<section class="panel" style="margin-top:18px"><div class="section-head"><h2>Daily log</h2> <button class="btn" onclick="">Today: {{today}}</button></div>
+<div class="notice">WFH is a normal 9-hour working day and does not reduce the weekly requirement. Holiday and leave reduce the weekly requirement by 9 hours unless marked as working. Holiday and leave are non-working days.</div>
+<div class="notice">Average needed on remaining working days: <b>{{format_minutes(data["average_remaining"])}}</b>. This value is recalculated after every completed day and WFH/holiday/leave selection.</div>
+<div class="notice">Remaining hours = weekly requirement minus actual completed hours. Extra hours reduce the remaining amount; short hours increase it. The remaining amount is averaged across upcoming working days.</div><div class="days">
+{% for d in data["days"] %}
+<div class="day">
+<div><div class="dayname">{{d["weekday"]}}</div><div class="date">{{d["date_label"]}}</div></div>
+<div><div class="label">Time</div>{{format_time_12(d["start"])}} → {{format_time_12(d["exit"])}}</div>
+<div><div class="label">Target</div><div class="target">{{format_minutes(d["target"]) if d["status"] in ["working","wfh"] else "—"}}</div></div>
+<div><div class="label">Worked</div>{{format_minutes(d["actual"]) if d["actual"] is not none else "Not logged"}}</div>
+<div class="optional"><div class="label">Result</div><span class="{{'positive' if d['difference'] is not none and d['difference']>=0 else 'negative'}}">{% if d["difference"] is not none %}{{'+' if d["difference"]>=0 else '-'}}{{format_minutes(d["difference"]|abs)}}{% else %}—{% endif %}</span></div>
+<div class="status {{ "working" if d["extra_working"] else d["status"] }}">{% if d["extra_working"] %}Working{% else %}{{{"working":"Working","wfh":"WFH","holiday":"Holiday","leave":"Leave"}[d["status"]]}}{% endif %}</div>
+<button class="edit" onclick="editDay('{{d["date_key"]}}')">Edit</button>
+</div>
+{% endfor %}
+</div></section>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-card"><div class="modal-head"><h3 id="modalTitle">Edit day</h3><button class="close" onclick="closeModal()">×</button></div>
+<form method="post" action="{{url_for('save_day')}}">
+<input type="hidden" name="work_date" id="mDate">
+<div class="field"><label>Status</label><select name="status" id="mStatus" onchange="toggleTimes()"><option value="working" class="opt-working">Working</option><option value="wfh" class="opt-wfh">Work from Home (10 AM – 7 PM)</option><option value="holiday" class="opt-holiday">Holiday</option><option value="leave" class="opt-leave">Leave</option></select></div>
+<div id="times"><div class="field"><label>Start time</label><input type="time" name="start_time" id="mStart" onchange="autoExit()"></div><div class="field"><label>Exit time</label><input type="time" name="exit_time" id="mExit"></div></div>
+<label class="check hidden" id="extraWrap"><input type="checkbox" name="extra_working" value="1" id="mExtra" onchange="toggleTimes()"> Mark a non-working day as working (no weekly target effect)</label>
+<div style="margin-top:18px"><button class="btn" style="width:100%">Save day</button></div>
+</form></div></div>
+
+<script>
+const logs={{data["days"]|tojson}};
+function editDay(k){
+ const d=logs.find(x=>x.date_key===k);
+ document.getElementById('mDate').value=k;
+ document.getElementById('mStatus').value=d?d.status:'working';
+ document.getElementById('mStart').value=d?d.start:'';
+ document.getElementById('mExit').value=d?d.exit:'';
+ document.getElementById('mExtra').checked=d?d.extra_working:false;
+ document.getElementById('mStart').dataset.targetMinutes=d?Math.round(d.target):0;
+ document.getElementById('modalTitle').textContent='Edit '+new Date(k+'T00:00:00').toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+ toggleTimes();
+ if(!d || !d.exit) autoExit();
+ document.getElementById('modal').classList.remove('hidden');
+}
+function autoExit(){
+ const start=document.getElementById('mStart');
+ const exit=document.getElementById('mExit');
+ const status=document.getElementById('mStatus').value;
+ const extra=document.getElementById('mExtra').checked;
+ if(status==='wfh' || extra) return;
+ const target=parseInt(start.dataset.targetMinutes||'0',10);
+ if(!start.value || !target) return;
+ const [h,m]=start.value.split(':').map(Number);
+ const total=h*60+m+target;
+ const hh=Math.floor(total/60)%24, mm=total%60;
+ exit.value=String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0');
+}
+function toggleTimes(){
+ const status=document.getElementById('mStatus').value;
+ const times=document.getElementById('times');
+ const start=document.getElementById('mStart');
+ const exit=document.getElementById('mExit');
+ const extraWrap=document.getElementById('extraWrap');
+ const extra=document.getElementById('mExtra');
+ const canOverride=['holiday','leave'].includes(status);
+ const override=canOverride && extra.checked;
+ const wfh=status==='wfh';
+ const nonWorking=canOverride && !extra.checked;
+
+ // The override checkbox exists only for Holiday/Leave.
+ extraWrap.classList.toggle('hidden', !canOverride);
+ if(!canOverride) extra.checked=false;
+
+ times.classList.toggle('hidden',nonWorking);
+ start.readOnly=wfh || override;
+ exit.readOnly=wfh || override;
+ if(wfh || override){
+   start.value='10:00'; exit.value='19:00';
+ }
+ if(!wfh && !override && !nonWorking) autoExit();
+}
+
+function updateProgress(){
+ const worked={{data["worked"]|tojson}};
+ const required={{data["required"]|tojson}};
+ const percent=required>0 ? Math.min(100, Math.max(0, (worked/required)*100)) : 0;
+ const ring=document.getElementById('ring');
+ const label=document.getElementById('percent');
+ const radius=68;
+ const circumference=2*Math.PI*radius;
+ ring.style.strokeDasharray=circumference+' '+circumference;
+ ring.style.strokeDashoffset=circumference-(percent/100)*circumference;
+ label.textContent=Math.round(percent)+'%';
+}
+updateProgress();
+function closeModal(){document.getElementById('modal').classList.add('hidden')}
+</script>
+{% endblock %}
